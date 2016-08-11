@@ -1,0 +1,483 @@
+<?php
+
+/**
+ * @file
+ * Provides a central publication context.
+ */
+
+/**
+ * Implements hook_init().
+ */
+function medstat_context_init() {
+  medstat_context_context();
+}
+
+/**
+ * Set/Get the medstat context for this request.
+ *
+ * If this is the first time this function has been invoked the context object
+ * will be created with properties populated by
+ * HOOK_medsatat_context_set_PROPERTY(). On all subsequent invocations the
+ * context object will simply be returned as it was originally set.
+ *
+ * @return MedstatContext
+ *   The MedstatContext object for this request.
+ */
+function medstat_context_context() {
+  $context = &drupal_static(__FUNCTION__);
+
+  // In rare cases where the registry must be rebuilt, the MedstatContext.php
+  // file has not been included which causes a fatal error.
+  // Since this function can be invoked extremely early in the bootstrap process
+  // this can render it impossible even to rebuild the registry. This is
+  // somewhat ugly, but avoids that problem.
+  if (!class_exists('MedstatContext')) {
+    module_load_include('php', 'medstat_context', 'includes/MedstatContext');
+  }
+
+  // Only set the context once.
+  if (!isset($context)) {
+    $props = MedstatContext::contextProperties();
+    foreach ($props as $prop => &$value) {
+      foreach (module_implements('medstat_context_set_' . $prop) as $module) {
+        // Prevent an errant hook from changing properties that have already
+        // been set.
+        $props_copy = $props;
+
+        $function = $module . '_medstat_context_set_' . $prop;
+        $function($value, $props_copy);
+      }
+    }
+
+    $context = new MedstatContext($props);
+  }
+
+  return $context;
+}
+
+/**
+ * Implements hook_medstat_context_set_entity_wrapper().
+ */
+function medstat_context_medstat_context_set_entity_wrapper(&$value) {
+  $wrapper = medstat_context_current_entity_wrapper();
+
+  if ($wrapper) {
+    $value = $wrapper;
+  }
+}
+
+/**
+ * Implements hook_medstat_context_set_publication().
+ */
+function medstat_context_medstat_context_set_publication(&$value, $set_values) {
+  $wrapper = $set_values['entity_wrapper'];
+
+  // Handle entity pages.
+  if ($wrapper) {
+    $entity = $wrapper->value();
+    $pub = FALSE;
+
+    if ($wrapper->type() == 'taxonomy_term' && $wrapper->getBundle() == 'publications') {
+      // If we are viewing a publication's page, set it as the publication.
+      $pub = $entity;
+    }
+    else {
+      // If we have an entity, try to get it's publication.
+      $pub = term_path_get_path_term_from_path($wrapper->type(), $entity);
+    }
+
+    if ($pub) {
+      $value = $pub;
+    }
+  }
+  // Handle non-entity pages.
+  else {
+    $args = arg();
+
+    if (isset($args[0]) && $args[0] == 'search' && isset($args[1]) && filter_var($args[1], FILTER_VALIDATE_INT)) {
+      $pub = taxonomy_term_load($args[1]);
+      if ($pub) {
+        $value = $pub;
+      }
+    }
+  }
+}
+
+/**
+ * Helper function for retrieving the current entity.
+ *
+ * @return EntityMetadataWrapper|bool
+ *   The entity metadata wrapper for the current entity if it is found and is a
+ *   node or taxonomy term. Otherwise FALSE.
+ */
+function medstat_context_current_entity_wrapper() {
+  $wrapper = &drupal_static(__FUNCTION__);
+
+  if (!isset($wrapper)) {
+    $id = FALSE;
+    $entity_type = 'node';
+    $args = arg();
+
+    // Nothing to do if we don't have at least two arguments.
+    if (!isset($args[0], $args[1])) {
+      return;
+    }
+
+    switch ($args[0]) {
+      case 'quiz':
+        $entity_type = 'quiz_entity';
+      case 'node':
+        // Make sure the nid argument is an integer or an integer string.
+        if ($args[1] == (int) $args[1]) {
+          $id = $args[1];
+        }
+        break;
+
+      case 'taxonomy':
+        // Make sure the tid argument is an integer or an integer string.
+        if ($args[1] == 'term' && $args[2] == (int) $args[2]) {
+          $id = $args[2];
+          $entity_type = 'taxonomy_term';
+        }
+        break;
+
+      default:
+        break;
+    }
+
+    // Make sure $id is valid entity id, then get the wrapper.
+    $original_id = $id;
+    $id = (int) $id;
+    $wrapper = $id && $original_id == $id ? entity_metadata_wrapper($entity_type, $id) : FALSE;
+  }
+
+  return $wrapper;
+}
+
+/**
+ * Implements hook_medstat_context_set_topics().
+ */
+function medstat_context_medstat_context_set_topics(&$value, $set_values) {
+  $wrapper = $set_values['entity_wrapper'];
+  if ($wrapper) {
+    if ($wrapper->type() == 'taxonomy_term' && $wrapper->getBundle() == 'topics') {
+      $value = array($wrapper->value());
+    }
+    else {
+      if (isset($wrapper->field_article_topics)) {
+        $value = $wrapper->field_article_topics->value();
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_medstat_context_set_sections().
+ */
+function medstat_context_medstat_context_set_sections(&$value, $set_values) {
+  $wrapper = $set_values['entity_wrapper'];
+  if ($wrapper) {
+    if ($wrapper->type() == 'taxonomy_term' && $wrapper->getBundle() == 'sections') {
+      $value = array($wrapper->value());
+    }
+    else {
+      if (isset($wrapper->field_article_sections)) {
+        $value = $wrapper->field_article_sections->value();
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_medstat_context_set_meetings().
+ */
+function medstat_context_medstat_context_set_meetings(&$value, $set_values) {
+  $wrapper = $set_values['entity_wrapper'];
+  if ($wrapper) {
+    if ($wrapper->type() == 'node') {
+      if ($wrapper->getBundle() == 'article' && isset($wrapper->field_article_meeting)) {
+        $value = $wrapper->field_article_meeting->value();
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_medstat_context_set_quiz_series().
+ */
+function medstat_context_medstat_context_set_quiz_series(&$value, $set_values) {
+  $wrapper = $set_values['entity_wrapper'];
+  if ($wrapper) {
+    if ($wrapper->type() == 'quiz_entity') {
+      if ($wrapper->getBundle() == 'md_iq' && isset($wrapper->field_md_iq_series)) {
+        $value = $wrapper->field_md_iq_series->value();
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_views_api().
+ */
+function medstat_context_views_api() {
+  return array(
+    'api' => 3,
+    'path' => drupal_get_path('module', 'medstat_context'),
+  );
+}
+
+/**
+ * Implements hook_views_data_alter().
+ */
+function medstat_context_views_data_alter(&$data) {
+  // Replace all instances of the following handlers:
+  // - views_handler_field_node with medstat_context_handler_field_node.
+  // - views_handler_field_taxonomy with medstat_context_handler_field_taxonomy.
+  foreach ($data as $type => $properties) {
+    foreach ($properties as $property => $info) {
+      if (isset($info['field']['handler'])) {
+        // Node field handler.
+        if ($info['field']['handler'] == 'views_handler_field_node') {
+          $data[$type][$property]['field']['handler'] = 'medstat_context_handler_field_node';
+        }
+
+        // Node field handler.
+        if ($info['field']['handler'] == 'views_handler_field_taxonomy') {
+          $data[$type][$property]['field']['handler'] = 'medstat_context_handler_field_taxonomy';
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_token_info().
+ */
+function medstat_context_token_info() {
+  return array(
+    'tokens' => array(
+      'node' => array(
+        'current_publication_url' => array(
+          'name' => t('Current Publication URL'),
+          'description' => t('The URL for the node on the current publication.'),
+          'type' => 'url',
+        ),
+      ),
+      'term' => array(
+        'current_publication_url' => array(
+          'name' => t('Current Publication URL'),
+          'description' => t('The URL for the term on the current publication.'),
+          'type' => 'url',
+        ),
+        'logo' => array(
+          'name' => t('Current Publication Logo'),
+          'description' => t('The Logo for the current publication.'),
+        ),
+        'related_publication' => array(
+          'name' => t('Related Publication'),
+          'description' => t('The ID for the related publication.'),
+          'type' => 'term',
+        ),
+      ),
+      'current-page' => array(
+        'publication' => array(
+          'name' => t('The Current Publication'),
+          'description' => t('The taxonomy term for the current publication.'),
+          'type' => 'term',
+        ),
+      ),
+    ),
+  );
+}
+
+/**
+ * Implements hook_tokens().
+ */
+function medstat_context_tokens($type, $tokens, array $data = array(), array $options = array()) {
+  $replacements = array();
+
+  // Process publication url tokens.
+  $to_process = array(
+    'node' => 'node',
+    'term' => 'taxonomy_term',
+  );
+
+  foreach ($to_process as $process_type => $process_entity) {
+    if ($type == $process_type && !empty($data[$process_type])) {
+      $entity = $data[$process_type];
+      $path = medstat_context_get_publication_path($process_entity, $data[$process_type]);
+      if (!empty($tokens['current_publication_url'])) {
+        $replacements[$tokens['current_publication_url']] = url($path, array('absolute' => TRUE));
+      }
+      if (!empty($tokens['logo'])) {
+        $replacements[$tokens['logo']] = medstat_context_term_logo_lookup($data[$process_type]);
+      }
+
+      if ($related_publication_tokens = token_find_with_prefix($tokens, 'related_publication')) {
+        module_load_include('inc', 'medstat_context');
+        if (isset($entity->field_related_publication_col)) {
+          $related_taxonomy = medstat_context_term_related_publication($entity);
+        }
+        if (isset($entity->field_related_publication) && !empty($entity->field_related_publication)) {
+          $related_taxonomy = taxonomy_term_load($entity->field_related_publication[LANGUAGE_NONE][0]['tid']);
+        }
+        if (!empty($related_taxonomy)) {
+          $replacements += token_generate('term', $related_publication_tokens, array('term' => $related_taxonomy), $options);
+        }
+      }
+
+      // Chained token relationships.
+      if ($url_tokens = token_find_with_prefix($tokens, 'current_publication_url')) {
+        $replacements += token_generate('url', $url_tokens, array('path' => $path), $options);
+      }
+    }
+  }
+
+  // Process publication token.
+  if ($type == 'current-page') {
+    $pub_tokens = token_find_with_prefix($tokens, 'publication');
+
+    if (!empty($tokens['publication']) || $pub_tokens) {
+      $publication = medstat_context_context()->getProperty('publication');
+
+      if (!empty($tokens['publication'])) {
+        if ($publication) {
+          $replacements[$tokens['publication']] = $publication;
+        }
+      }
+
+      // Chained token relationship.
+      if ($pub_tokens) {
+        $replacements += token_generate('term', $pub_tokens, array('term' => $publication), $options);
+      }
+    }
+  }
+
+  return $replacements;
+}
+
+/**
+ * Finds the logo for a term.
+ */
+function medstat_context_term_logo_lookup($term) {
+  $cache = &drupal_static(__FUNCTION__);
+  if (empty($term) || !isset($term->tid)) {
+    return NULL;
+  }
+  $tid = $term->tid;
+  if (!empty($cache[$tid])) {
+    return $cache[$tid];
+  }
+  if ($term->vocabulary_machine_name == 'publications') {
+    $publication = $term;
+  }
+  else {
+    $publication = medstat_context_context()->getProperty('publication');
+  }
+  if (empty($publication) || !isset($publication->field_publication_theme['und'][0]['value'])) {
+    return NULL;
+  }
+  $logo_path = theme_get_setting(
+    'logo_path',
+    $publication->field_publication_theme['und'][0]['value']
+  );
+  if (empty($logo_path)) {
+    return NULL;
+  }
+  return theme_image(array(
+    'path' => $logo_path,
+    'attributes' => array(
+      'class' => array(
+        'related-articles-logo',
+      ),
+    ),
+  ));
+}
+
+/**
+ * Outputs the system path to an entity with publication context.
+ */
+function medstat_context_get_publication_path($entity_type, $entity, $pub = NULL) {
+  $cache = &drupal_static(__FUNCTION__);
+
+  $id = term_path_entity_id($entity_type, $entity);
+
+  // Get the current publication if none was passed.
+  if (!isset($pub)) {
+    if (!isset($cache['current_publication'])) {
+      $current_publication = medstat_context_context()->getProperty('publication');
+
+      // Set to FALSE if we have no current_publication so the above isset()
+      // will work properly if we've already done this.
+      $cache['current_publication'] = $current_publication ? $current_publication : FALSE;
+    }
+
+    $pub = $cache['current_publication'];
+  }
+
+  $unique_name = $pub ? $pub->tid . '_' . $id : $id;
+
+  if (!isset($cache['paths'][$entity_type][$unique_name])) {
+    // Check that the publication is valid for the entity.
+    if ($pub && term_path_entity_term_validate($entity_type, $entity, $pub)) {
+      // Use the entity/publication path.
+      $cache['paths'][$entity_type][$unique_name] = term_path_path($entity_type, $entity, $pub);
+    }
+    else {
+      // Use the canonical system path.
+      $cache['paths'][$entity_type][$unique_name] = medstat_paths_get_canonical_path($entity_type, $entity);
+    }
+
+  }
+
+  return $cache['paths'][$entity_type][$unique_name];
+}
+
+/**
+ * Implements hook_preprocess_node().
+ */
+function medstat_context_preprocess_node(&$vars) {
+  $node = $vars['node'];
+  $path = medstat_context_get_publication_path('node', $node);
+  $vars['node_url'] = url($path);
+  if (isset($vars['content']['links']['node']['#links']['node-readmore']['href'])) {
+    $vars['content']['links']['node']['#links']['node-readmore']['href'] = $path;
+  }
+}
+
+/**
+ * Implements hook_preprocess_image_formatter().
+ */
+function medstat_context_preprocess_image_formatter(&$vars) {
+  if (isset($vars['path']['options']['entity']) && isset($vars['path']['options']['entity_type'])) {
+    $vars['path']['path'] = medstat_context_get_publication_path($vars['path']['options']['entity_type'], $vars['path']['options']['entity']);
+  }
+}
+
+/**
+ * Implements hook_preprocess_taxonomy_term().
+ */
+function medstat_context_preprocess_taxonomy_term(&$vars) {
+  $term = $vars['term'];
+  $path = medstat_context_get_publication_path('taxonomy_term', $term);
+  $vars['term_url'] = url($path);
+}
+
+/**
+ * Implements hook_ctools_plugin_directory().
+ */
+function medstat_context_ctools_plugin_directory($owner, $plugin_type) {
+  if ($owner == 'ctools' && $plugin_type == 'contexts') {
+    return 'plugins/contexts';
+  }
+}
+
+/**
+ * Implements hook_preprocess_page().
+ */
+function medstat_context_preprocess_page(&$vars) {
+  if ($pub = medstat_context_context()->getProperty('publication')) {
+    $uri = entity_uri('taxonomy_term', $pub);
+    $vars['front_page'] = url($uri['path'], $uri['options']);
+  }
+}

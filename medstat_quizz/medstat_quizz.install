@@ -1,0 +1,86 @@
+<?php
+
+/**
+ * @file
+ * Medstat quizz updates/install.
+ */
+
+/**
+ * Get quiz defaults for inital launch.
+ */
+function medstat_quizz_md_iq_initial_defaults() {
+  return array(
+    'type'                  => 'md_iq',
+    'allow_jumping'         => 0,
+    'allow_resume'          => 1,
+    'allow_skipping'        => 0,
+    'allow_change'          => 0,
+    'always_available'      => TRUE,
+    'backwards_navigation'  => 0,
+    'build_on_last'         => '',
+    'has_userpoints'        => 0,
+    'keep_results'          => 2,
+    'mark_doubtful'         => 0,
+    'quiz_always'           => 1,
+    'quiz_close'            => 0,
+    'quiz_open'             => 0,
+    'repeat_until_correct'  => 0,
+    'review_options'        => array(
+      'question' => array(
+        'quiz_question_view_teaser' => 'quiz_question_view_teaser',
+        'attempt' => 'attempt',
+        'choice' => 'choice',
+        'question_feedback' => 'question_feedback',
+        'solution' => 'solution',
+      ),
+      'end' => array(
+        'quiz_feedback' => 'quiz_feedback',
+      ),
+    ),
+    'show_attempt_stats'    => 0,
+    'show_passed'           => 1,
+    'takes'                 => 0,
+    'tid'                   => 0,
+    'time_limit'            => 0,
+    'userpoints_tid'        => 0,
+  );
+}
+
+/**
+ * Set global default for MD-IQ quizzes.
+ */
+function medstat_quizz_update_7100() {
+  $defaults = medstat_quizz_md_iq_initial_defaults();
+  $quiz = entity_create('quiz_entity', $defaults + array('remember_global' => 1));
+  $quiz->getController()->getSettingIO()->updateUserDefaultSettings($quiz);
+}
+
+/**
+ * Apply new default to existing MD-IQ quizzes.
+ */
+function medstat_quizz_update_7101() {
+  $query = new EntityFieldQuery();
+  $query->entityCondition('entity_type', 'quiz_entity')
+    ->entityCondition('bundle', 'md_iq');
+  $result = $query->execute();
+
+  $ids = !empty($result['quiz_entity']) ? array_keys($result['quiz_entity']) : array();
+
+  foreach ($ids as $id) {
+    $quiz = quizz_load($id);
+    foreach (medstat_quizz_md_iq_initial_defaults() as $name => $value) {
+      $quiz->{$name} = $value;
+    }
+    $quiz->save();
+  }
+}
+
+/**
+ * Delete quiz results for anonymous users with scores > 0.
+ */
+function medstat_quizz_update_7102() {
+  $query = db_delete('quiz_results')
+    ->condition('uid', 0)
+    ->condition('score', 0, '<>')
+    ->execute();
+}

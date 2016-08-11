@@ -1,0 +1,649 @@
+<?php
+/**
+ * @file
+ * Code for the Medstat Quizz feature.
+ */
+
+include_once 'medstat_quizz.features.inc';
+use Drupal\quizz\Entity\Result\Render;
+
+/**
+ * Implements hook_ctools_plugin_directory().
+ */
+function medstat_quizz_ctools_plugin_directory($module, $plugin) {
+  if ($module == 'ctools') {
+    return 'plugins/' . $plugin;
+  }
+}
+
+/**
+ * Implements hook_theme().
+ */
+function medstat_quizz_theme($existing, $type, $theme, $path) {
+  return array(
+    'md_iq_header' => array(
+      'template' => 'templates/md-iq-header',
+    ),
+    'md_iq_question_wrapper' => array(
+      'template' => 'templates/md-iq-question-wrapper',
+    ),
+    'md_iq_quiz_block' => array(
+      'template' => 'templates/md-iq-quiz-block',
+      'variables' => array(
+        'title' => '',
+        'image' => array(),
+        'taken' => FALSE,
+        'content' => '',
+      ),
+    ),
+    'md_iq_result_summary' => array(
+      'template' => 'templates/md-iq-result-summary',
+      'variables' => array(
+        'quiz' => NULL,
+        'score' => NULL,
+        'summary' => '',
+        'rid' => NULL,
+      ),
+    ),
+    'questionnaire_result_summary' => array(
+      'template' => 'templates/questionnaire-result-summary',
+    ),
+    'medstat_quizz_report_form' => array(
+      'render element' => 'form',
+      'template' => 'templates/medstat-quizz-report-form',
+    ),
+  );
+}
+
+/**
+ * Implements hook_menu().
+ */
+function medstat_quizz_menu() {
+  $items = array();
+
+  $items['questionnaire/%quizz/results'] = array(
+    'page callback'    => 'medstat_quizz_questionnaire_results',
+    'page arguments'   => array(1),
+    'access arguments' => array('access content'),
+    'type'             => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+/**
+ * Implements hook_menu_alter().
+ */
+function medstat_quizz_menu_alter(&$items) {
+  // Hide the take tab on quiz node.
+  if (!empty($items['quiz/%quizz/take'])) {
+    $items['quiz/%quizz/take']['type'] = MENU_CALLBACK;
+  }
+}
+
+/**
+ * Implements hook_entity_info_alter().
+ */
+function medstat_quizz_entity_info_alter(&$entity_info) {
+  $entity_info['quiz_result']['view callback'] = 'medstat_quizz_quiz_result_view';
+}
+
+/**
+ * Callback for viewing quizz results.
+ */
+function medstat_quizz_quiz_result_view($entities, $view_mode, $langcode, $entity_type) {
+  // Get the result ID.
+  if (isset($_SESSION['quiz']['temp']['result_id'])) {
+    if (!empty($session_rid = intval($_SESSION['quiz']['temp']['result_id']))) {
+      $result_id = $session_rid;
+    }
+  }
+  if (!isset($result_id)) {
+    return;
+  }
+
+  // Render the report form.
+  $quiz_id = quizz_get_id_from_url();
+  $quiz = quizz_load($quiz_id);
+  $result = quizz_result_load($result_id);
+  $output = drupal_get_form('quizz_report_form', $result, array());
+
+  return $output;
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+function medstat_quizz_form_quiz_answer_form_alter(&$form, &$form_state, $form_id) {
+  global $user;
+  $quiz = $form['#quiz'];
+  $clean_nav = array('skip', 'last_text');
+
+  // Quiz type specific alters.
+  switch ($quiz->type) {
+    case 'md_iq':
+
+      if ($user->uid === 0) {
+        $form['#validate'][] = 'medstat_quizz_anonymous_to_login';
+      }
+
+      $current_path = current_path();
+      $path = medstat_context_get_publication_path('quiz_entity', $quiz);
+      if ($current_path !== $path) {
+        $form['#action'] = '/' . drupal_get_path_alias($path);
+      }
+      if ($form['#question']->type == 'default_truefalse') {
+        // Add circle span to True and False alternatives.
+        foreach ($form['question'] as &$question) {
+          $question['answer']['#options'][1] = '<span></span>' . $question['answer']['#options'][1];
+          $question['answer']['#options'][0] = '<span></span>' . $question['answer']['#options'][0];
+        }
+      }
+      break;
+
+    case 'questionnaire':
+      $clean_nav[] = 'back';
+      $form['#attached']['js'][] = drupal_get_path('module', 'medstat_quizz') . '/medstat_quizz.js';
+      $form['#attached']['js'][] = array(
+        'data' => array(
+          'medstat_quizz' => array(
+            'postURL' => "/questionnaire/{$quiz->qid}/results",
+          ),
+        ),
+        'type' => 'setting',
+      );
+      break;
+  }
+
+  if (isset($form['navigation'])) {
+    // Clean out unwanted nav elements.
+    foreach ($clean_nav as $key) {
+      if (isset($form['navigation'][$key])) {
+        unset($form['navigation'][$key]);
+      }
+    }
+
+    // Change out submit text.
+    switch ($form['navigation']['submit']['#value']) {
+      case t('Finish'):
+      case t('Next'):
+        $form['navigation']['submit']['#attributes']['data-display-value'] = t('Am I Correct?');
+        break;
+    }
+  }
+}
+
+/**
+ * Validation callback for the MD-IQ answer form.
+ *
+ * Prevents anonymous users from progressing past the first question.
+ */
+function medstat_quizz_anonymous_to_login(&$form, &$form_state) {
+  global $user;
+
+  if ($user->uid === 0) {
+    // Try to authenticate OneCount users.
+    medstat_onecount_auth_authenticate();
+
+    // If we couldn't authenticate, then prompt the user to login.
+    if ($user->uid === 0) {
+      $link = l(
+        t('Register or login'),
+        '#',
+        array(
+          'attributes' => array(
+            'class' => array('onecount-login-logout-link'),
+          ),
+        )
+      );
+      $message = t(
+        'Please !log_in to take this quiz.',
+        array('!log_in' => $link)
+      );
+      form_set_error('op', $message);
+    }
+  }
+}
+
+/**
+ * Callback for ajax response questionnaire results.
+ */
+function medstat_quizz_questionnaire_results($quiz) {
+  if (!$quiz || !isset($_SESSION['quiz'][$quiz->qid]) || !isset($_POST['answer'])) {
+    drupal_access_denied();
+  }
+  else {
+    $question = current($quiz->getQuestionIO()->getQuestionList());
+    $question = quizz_question_load($question['qid'], $question['vid']);
+
+    $response = $question->getResponseHandler($_SESSION['quiz'][$quiz->qid]['result_id']);
+    $response->setAnswerInput(array('user_answer' => array($_POST['answer'])));
+    $response->save();
+
+    // Get the results list.
+    $query = db_select('quiz_answer_entity', 'a')
+      ->fields('ma', array('user_answer'))
+      ->condition('a.question_qid', $question->qid, '=')
+      ->groupBy('ma.user_answer');
+
+    $query->leftJoin('quizz_multichoice_answer', 'ma', 'ma.answer_id = a.id');
+    $query->addExpression('count(*)', 'count');
+    $answers = $query->execute()->fetchAll();
+
+    $results = array();
+    $has_correctness = 0;
+    // Populate the results array.
+    foreach ($question->getHandler()->properties['alternatives'] as $choice) {
+      $has_correctness += $choice['score_if_chosen'];
+      $results[$choice['id']] = array(
+        'choice' => strip_tags($choice['answer']['value']),
+        'count' => 0,
+        'chosen' => $choice['id'] == $_POST['answer'],
+        'correct' => $choice['score_if_chosen'] > 0,
+        'class' => ($choice['id'] == $_POST['answer']) ? 'regular' : 'unselected',
+      );
+    }
+
+    // Pull the actual use counts.
+    $total_votes = 0;
+    foreach ($answers as $answer) {
+      $total_votes += $answer->count;
+      $id = current(unserialize($answer->user_answer));
+      if (isset($results[$id])) {
+        $results[$id]['count'] = $answer->count;
+      }
+    }
+
+    // Calculate percentages.
+    foreach ($results as &$result) {
+      $result['percent'] = round(($result['count'] / $total_votes) * 100, 1) . '%';
+
+      // Only if we're measuring correctness do we fill the response out.
+      if ($has_correctness) {
+        $inun_class = $result['chosen'] ? 'incorrect' : 'unselected';
+        $result['class'] = $result['correct'] ? 'correct' : $inun_class;
+        $result['response'] = '';
+
+        if ($result['correct']) {
+          $result['response'] = 'Correct!';
+        }
+        elseif ($result['chosen']) {
+          // If chosen and incorrect, show as such.
+          $result['response'] = 'Incorrect';
+        }
+      }
+    }
+
+    print theme('questionnaire_result_summary', array(
+      'quiz' => $quiz,
+      'question' => $question,
+      'results' => $results,
+    ));
+  }
+}
+
+/**
+ * Implements hook_preprocess_THEME().
+ */
+function medstat_quizz_preprocess_md_iq_result_summary(&$variables) {
+  drupal_set_title($variables['quiz']->title);
+
+  $score = $variables['score'];
+  if (!empty($score['possible_score'])) {
+    if (!$score['is_evaluated']) {
+      if (user_access('score taken quiz answer')) {
+        $msg = t('Parts of this quiz have not been evaluated yet. The score below is not final.');
+      }
+      else {
+        $msg = t('Parts of this quiz have not been evaluated yet. The score below is not final.');
+      }
+      drupal_set_message($msg, 'warning');
+    }
+  }
+
+  // TODO: Support question/answer rendering.
+  $variables['average_score'] = round(medstat_quizz_get_average_score($variables['quiz']->qid));
+}
+
+/**
+ * Helper function to fake path used by quiz module.
+ */
+function medstat_quizz_patch_path($path = NULL, $check = FALSE) {
+  $data = &drupal_static(__FUNCTION__, array());
+  if ($check) {
+    return $data;
+  }
+  if ($path) {
+    if (empty($data['original'])) {
+      $data['original'] = current_path();
+    }
+    $data['patched'] = $path;
+    $_GET['q'] = $path;
+  }
+  else {
+    if (!empty($data['original'])) {
+      $_GET['q'] = $data['original'];
+      unset($data['original']);
+      unset($data['patched']);
+    }
+  }
+  return $data;
+}
+
+/**
+ * Implements hook_drupal_goto_alter().
+ */
+function medstat_quizz_drupal_goto_alter(&$path, &$options, &$http_response_code) {
+  $patched = medstat_quizz_patch_path(NULL, TRUE);
+  if (empty($patched['original']) || empty($patched['patched'])) {
+    return NULL;
+  }
+
+  // If reloading page to patched page, then restore the to original path.
+  if (drupal_match_path($path, $patched['patched'])) {
+    $path = $patched['original'];
+  }
+}
+
+/**
+ * Get the average score for a given quiz.
+ */
+function medstat_quizz_get_average_score($qid) {
+  if (!is_numeric($qid)) {
+    return NULL;
+  }
+
+  $sql = 'SELECT IFNULL(AVG(score), 0) AS average
+          FROM {quiz_results} r
+          WHERE r.quiz_qid = :qid
+          AND is_evaluated = 1';
+  $res = db_query($sql, array(':qid' => $qid));
+  return floatval($res->fetchField());
+}
+
+/**
+ * Implements hook_permission().
+ */
+function medstat_quizz_permission() {
+  return array(
+    'administer quiz default settings' => array(
+      'title' => t('Administer Quiz Default Settings'),
+      'description' => t('Administer default settings for quiz entities.'),
+      'restrict' => TRUE,
+    ),
+  );
+}
+
+/**
+ * Implements hook_form_alter().
+ */
+function medstat_quizz_form_alter(&$form, &$form_state, $form_id) {
+  $to_alter = array(
+    'quiz_answer_form',
+    'quiz_result_form',
+    'quizz_report_form',
+  );
+
+  if (in_array($form_id, $to_alter)) {
+    $function = 'medstat_quizz_no_redirects';
+    $form['#submit'][] = $function;
+    foreach (array('back', 'skip', 'submit') as $op) {
+      if (isset($form['navigation'][$op]['#submit'])) {
+        $form['navigation'][$op]['#submit'][] = $function;
+      }
+    }
+    foreach (array('next', 'finish') as $op) {
+      if (isset($form[$op]['#submit'])) {
+        $form[$op]['#submit'][] = $function;
+      }
+    }
+  }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+function medstat_quizz_form_quiz_entity_edit_md_iq_form_alter(&$form, &$form_state, $form_id) {
+  if (!user_access('administer quiz default settings')) {
+    $form['taking']['#access'] = FALSE;
+    $form['quiz_availability']['#access'] = FALSE;
+    $form['summary_options']['#access'] = FALSE;
+    $form['result_options']['#access'] = FALSE;
+    $form['remember']['#access'] = FALSE;
+  }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+function medstat_quizz_form_quizz_admin_entity_form_alter(&$form, &$form_state, $form_id) {
+  if (!user_access('administer quiz default settings')) {
+    drupal_access_denied();
+    drupal_exit();
+  }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter().
+ */
+function medstat_quizz_form_quizz_report_form_alter(&$form, &$form_state, $form_id) {
+  $result = $form_state['build_info']['args'][0];
+
+  if (!$result) {
+    // We don't have a result.
+    return;
+  }
+
+  $form['#theme'][0] = 'medstat_quizz_report_form';
+
+  $quiz = $result->getQuiz();
+  $finished = !empty($_SESSION['quiz']['finished'][$quiz->qid]);
+  $questions = $form_state['build_info']['args'][1];
+  $is_last_feedback = !empty($_SESSION['quiz']['feedback'][$quiz->qid]) && empty($_SESSION['quiz'][$quiz->qid]['current']) && isset($_SESSION['quiz']['temp']['result_id']);
+
+  if ($is_last_feedback) {
+    $current = $result->countPages();
+  }
+  else {
+    $current = isset($_SESSION['quiz'][$quiz->qid]['current']) ? $_SESSION['quiz'][$quiz->qid]['current'] - 1 : 1;
+  }
+
+  // We're showing feedback for the whole quiz.
+  if ($finished) {
+    // Display a summary.
+    $score = quizz_result_controller()->getScoreIO()->calculate($result);
+    $quiz_render = new Render($quiz, $quiz, $result);
+
+    $form['summary'] = array(
+      '#theme' => 'md_iq_result_summary',
+      '#quiz' => $quiz,
+      '#score' => $score,
+      '#summary' => $quiz_render->getSummaryText(),
+      '#rid' => $result->result_id,
+    );
+
+    // Set the button value to "Tage Again" on the quiz results page.
+    $form['finish']['#value'] = t('Take Again');
+    $form['finish']['#weight'] = 100;
+
+    // Temporarily hide the "Take Again" button on the quiz result page.
+    // @TODO: This was hidden because there is some issue with question
+    // revisions and old results being used to populate data during quiz
+    // progress rather than using the current question revision and result
+    // entity. It was also hidden because Frontline doesn't like it. After we
+    // address those issues and have a conversation with Frontline, we should
+    // show this button again so users are able to retake a quiz in the same
+    // session.
+    $form['finish']['#access'] = FALSE;
+  }
+  // We're showing Question feedback.
+  else {
+
+    // Populate the pages array for the progress markup.
+    $pages = array();
+    $i = 0;
+    foreach ($result->layout as $idx => $question) {
+      if (empty($question['qr_pid'])) {
+        $pages[$idx] = ++$i;
+      }
+    }
+
+    // Process each question.
+    foreach ($questions as $i => $question) {
+      $q_wrapper = entity_metadata_wrapper('quiz_question_entity', $question);
+
+      // Stop the explanation field from displaying if the only text is the
+      // smart paging HTML comment.
+      $question_feedback = render($form[$i]['question_feedback']);
+      if ($question_feedback !== '<!--smart_paging_filter-->') {
+        $form[$i]['rendered_question_feedback'] = array(
+          '#markup' => $question_feedback,
+        );
+      }
+
+      // Add reference markup.
+      if ($q_wrapper->__isset('field_question_ref_text')) {
+        $ref_text = $q_wrapper->field_question_ref_text->value();
+        if ($ref_text) {
+          // Get the reference markup.
+          $ref_output = check_markup($ref_text['value'], $ref_text['format']);
+
+          // Link the reference markup.
+          if ($q_wrapper->__isset('field_question_ref_link')) {
+            $ref_link = $q_wrapper->field_question_ref_link->value();
+
+            if ($ref_link) {
+              $ref_output = l($ref_output, $ref_link['url'], array('html' => TRUE, 'attributes' => $ref_link['attributes']));
+            }
+          }
+
+          $form[$i]['question_reference'] = array(
+            '#markup' => $ref_output,
+          );
+        }
+      }
+    }
+
+    // Show the quiz progress.
+    $form['progress'] = array(
+      '#markup' => theme('quizz_progress', array(
+        'quiz' => $quiz,
+        'questions' => $pages,
+        'current' => $current,
+        'allow_jumping' => $quiz->allow_jumping,
+        'pager' => count($pages) >= $quiz->getQuizType()->getConfig('quiz_pager_start', 100),
+        'time_limit' => $quiz->time_limit,
+      )),
+    );
+  }
+}
+
+/**
+ * Submit callback to prevent redirects on quiz forms.
+ */
+function medstat_quizz_no_redirects(&$form, &$form_state) {
+  if (isset($form_state['redirect'])) {
+    unset($form_state['redirect']);
+  }
+}
+
+/**
+ * Implements hook_views_data_alter().
+ */
+function medstat_quizz_views_data_alter(&$data) {
+  // Replace URL views field handler for use context path.
+  $data['views_entity_quiz_entity']['url']['field']['handler'] = 'medstat_quizz_handler_field_uri';
+}
+
+/**
+ * Implements hook_views_query_alter().
+ */
+function medstat_quizz_views_query_alter(&$view, &$query) {
+  // This is pretty tricky. With the views interface there was no way to pass
+  // the current user's UID into context without actually limiting the results
+  // to only quizzes that user has taken. There was also no way to get that
+  // user's score without passing in their context. What we're doing below is
+  // removing the condition that restricts the results to quizzes the user has
+  // taken and instead restricting the join on the results table with the UID so
+  // we get all quizzes, but only the results for the current user. Whew!
+  if ($view->name === 'medstat_quiz_listing_panes' && $view->current_display === 'medstat_md_iq_by_topic') {
+    // Remove the condition on the User UID.
+    unset($query->where[0]['conditions'][1]);
+
+    // Only join to results when the User UID matches the current user.
+    $uid = isset($view->args[1]) ? $view->args[1] : 0;
+    $extra = array(
+      'field' => 'uid',
+      'value' => array(
+        $uid => $uid,
+      ),
+    );
+    $query->table_queue['quiz_results']['join']->extra[] = $extra;
+    $query->table_queue['quiz_results']['join']->definition['extra'][] = $extra;
+  }
+}
+
+/**
+ * Implements quizz_question_info_alter().
+ */
+function medstat_quizz_quizz_question_info_alter(&$info) {
+  // Removes the quiz directions and quiz page question types from
+  // the add a question select lists, and filters.
+  unset($info['quiz_directions']);
+  unset($info['quiz_page']);
+}
+
+/**
+ * Implements hook_admin_paths_alter().
+ */
+function medstat_quizz_admin_paths_alter(&$paths) {
+  $paths['quiz/*/questions'] = TRUE;
+  $paths['quiz-question/*'] = TRUE;
+}
+
+/**
+ * Implements hook_preprocess_quiz_question_feedback().
+ */
+function medstat_quizz_preprocess_quizz_question_feedback(&$vars) {
+
+  foreach ($vars['data'] as $i => $row) {
+    $correct = !empty($row['solution']);
+    $chosen = !empty($row['attempt']);
+
+    // Remove attempt and solution columns.
+    unset($vars['data'][$i]['attempt']);
+    unset($vars['data'][$i]['solution']);
+    unset($vars['labels']['attempt']);
+    unset($vars['labels']['solution']);
+
+    // Add result and text columns.
+    $vars['lables']['text'] = '';
+    $vars['lables']['result'] = '';
+    $vars['data'][$i]['text'] = '';
+    $vars['data'][$i]['result'] = '';
+
+    if ($correct) {
+      $vars['data'][$i]['result'] = quizz_icon('correct');
+
+      if ($chosen) {
+        $vars['data'][$i]['text'] = '<span class="correct">' . t('Correct!') . '</span>';
+      }
+    }
+    elseif ($chosen) {
+      $vars['data'][$i]['text'] = '<span class="incorrect">' . t('Incorrect') . '</span>';
+      $vars['data'][$i]['result'] = quizz_icon('incorrect');
+    }
+    else {
+      $vars['data'][$i]['result'] = quizz_icon('unselected');
+    }
+
+    // Make sure the choice cell is last.
+    unset($vars['data'][$i]['choice']);
+    $vars['data'][$i]['choice'] = $row['choice'];
+  }
+
+  // Hide all the labels.
+  foreach ($vars['labels'] as &$label) {
+    $label = '';
+  }
+}

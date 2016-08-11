@@ -1,0 +1,13 @@
+name = Medstat Context
+description = Provides a central publication context.
+core = 7.x
+version = 7.x-1.0
+
+dependencies[] = entity
+dependencies[] = term_path
+dependencies[] = medstat_paths
+
+files[] = includes/MedstatContext.php
+files[] = views/handlers/medstat_context_handler_field_node.inc
+files[] = views/handlers/medstat_context_handler_field_taxonomy.inc
+files[] = medstat_context.inc
